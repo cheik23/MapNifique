@@ -1,0 +1,45 @@
+﻿# Reinstallable dependencies and generated builds
+**/node_modules/
+**/dist/
+**/dist-ssr/
+**/.vite/
+**/.vercel/
+**/.next/
+**/.turbo/
+**/.cache/
+**/coverage/
+
+# Secrets and local credentials
+.env
+.env.*
+**/.env
+**/.env.*
+!**/.env.example
+**/secrets/
+**/*.pem
+**/*.key
+**/*credentials*
+
+# Private data, database files, backups and runtime state
+**/data/**
+!backend/scraper/data/.gitkeep
+**/storage/
+**/backups/
+**/.crawlee/
+**/pgdata/
+**/postgres_data/
+**/*.sqlite
+**/*.sqlite3
+**/*.db
+**/*.dump
+**/*.bak
+**/*.backup
+**/*.pid
+**/*.pid.lock
+**/*.log
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

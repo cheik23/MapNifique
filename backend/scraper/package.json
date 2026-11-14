@@ -1,0 +1,23 @@
+{
+  "name": "mapnifique-scraper-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "start:api": "node src/server.js",
+    "start:worker": "node src/worker.js",
+    "check": "node --check src/server.js && node --check src/worker.js && node --check src/crawler.js && node --check src/extract.js && node --check src/db.js",
+    "test": "node --test src/*.test.js"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.1.0",
+    "crawlee": "^3.18.2",
+    "dotenv": "^16.6.1",
+    "fastify": "^5.6.1",
+    "pg": "^8.16.3",
+    "playwright": "1.65.0"
+  }
+}
