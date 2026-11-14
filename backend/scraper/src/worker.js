@@ -1,4 +1,4 @@
-import { initDb, pool, claimNextJob } from './db.js';
+import { initDb, pool, claimNextJob, refreshJobHeartbeat } from './db.js';
 import { config } from './config.js';
 import { runCrawlJob } from './crawler.js';
 
@@ -26,16 +26,36 @@ async function main() {
       continue;
     }
 
+    const heartbeat = setInterval(() => {
+      refreshJobHeartbeat(job.id, job.lease_token).then((owned) => {
+        if (!owned) console.error(`[worker] Lease du job ${job.id} perdue.`);
+      }).catch((error) => {
+        console.error(`[worker] Heartbeat du job ${job.id} impossible:`, error.message);
+      });
+    }, config.workerJobHeartbeatMs);
+    heartbeat.unref();
+
     try {
       const sourceResult = await pool.query('SELECT * FROM sources WHERE id=$1 AND enabled=TRUE', [job.source_id]);
       const source = sourceResult.rows[0];
       if (!source) throw new Error('Source absente ou désactivée.');
       const stats = await runCrawlJob(job, source);
-      await pool.query(`UPDATE scrape_jobs SET status='completed', finished_at=NOW() WHERE id=$1`, [job.id]);
+      const completed = await pool.query(`
+        UPDATE scrape_jobs
+           SET status='completed', finished_at=NOW(), heartbeat_at=NOW(), lease_token=NULL
+         WHERE id=$1 AND status='running' AND lease_token=$2
+      `, [job.id, job.lease_token]);
+      if (!completed.rowCount) throw new Error('Lease du job perdue avant la fin de la collecte.');
       console.log(`[worker] Job ${job.id} terminé: ${stats.pagesSeen} pages, ${stats.productsFound} produits enregistrés, ${stats.skippedByRobots} URL ignorées par robots.txt.`);
     } catch (error) {
       console.error(`[worker] Job ${job.id} en échec:`, error.stack || error.message);
-      await pool.query(`UPDATE scrape_jobs SET status='failed', finished_at=NOW(), error=$2 WHERE id=$1`, [job.id, String(error.message || error).slice(0, 2000)]);
+      await pool.query(`
+        UPDATE scrape_jobs
+           SET status='failed', finished_at=NOW(), error=$3, lease_token=NULL
+         WHERE id=$1 AND status='running' AND lease_token=$2
+      `, [job.id, job.lease_token, String(error.message || error).slice(0, 2000)]);
+    } finally {
+      clearInterval(heartbeat);
     }
   }
 

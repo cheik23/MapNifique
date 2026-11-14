@@ -1,4 +1,5 @@
 import pg from 'pg';
+import { randomUUID } from 'node:crypto';
 import { config } from './config.js';
 
 const { Pool } = pg;
@@ -39,9 +40,12 @@ export async function initDb() {
       error TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       started_at TIMESTAMPTZ,
+      heartbeat_at TIMESTAMPTZ,
+      lease_token TEXT,
       finished_at TIMESTAMPTZ
     );
     CREATE INDEX IF NOT EXISTS scrape_jobs_queue_idx ON scrape_jobs(status, created_at);
+    CREATE INDEX IF NOT EXISTS scrape_jobs_lease_idx ON scrape_jobs(status, heartbeat_at);
 
     CREATE TABLE IF NOT EXISTS products (
       id BIGSERIAL PRIMARY KEY,
@@ -127,20 +131,51 @@ export async function insertProductAndPrice(sourceId, product) {
   return true;
 }
 
-export async function claimNextJob() {
-  const result = await pool.query(`
+export async function claimNextJob(db = pool) {
+  await db.query(`
     UPDATE scrape_jobs
-       SET status='running', started_at=NOW(), attempts=attempts+1, error=NULL
-     WHERE id = (
-       SELECT id FROM scrape_jobs
-        WHERE status='queued'
-        ORDER BY created_at
-        LIMIT 1
-        FOR UPDATE SKIP LOCKED
-     )
-    RETURNING *
-  `);
+       SET status='failed', finished_at=NOW(),
+           error=COALESCE(error,'Worker heartbeat expired after maximum attempts'),
+           lease_token=NULL
+     WHERE status='running'
+       AND attempts >= $1
+       AND COALESCE(heartbeat_at,started_at) <= NOW() - ($2::double precision * INTERVAL '1 millisecond')
+  `, [config.workerJobMaxAttempts, config.workerJobLeaseMs]);
+
+  const leaseToken = randomUUID();
+  const result = await db.query(`
+    WITH candidate AS (
+      SELECT id FROM scrape_jobs
+       WHERE (status='queued' AND attempts < $1)
+          OR (status='failed' AND attempts < $1 AND finished_at IS NOT NULL
+              AND finished_at <= NOW() - ($2::double precision * INTERVAL '1 millisecond'))
+          OR (status='running' AND attempts < $1
+              AND COALESCE(heartbeat_at,started_at) <= NOW() - ($3::double precision * INTERVAL '1 millisecond'))
+       ORDER BY CASE WHEN status='queued' THEN 0 ELSE 1 END, created_at
+       LIMIT 1
+       FOR UPDATE SKIP LOCKED
+    )
+    UPDATE scrape_jobs AS job
+       SET status='running',
+           started_at=COALESCE(job.started_at,NOW()),
+           heartbeat_at=NOW(),
+           lease_token=$4,
+           attempts=job.attempts+1,
+           error=NULL,
+           finished_at=NULL
+      FROM candidate
+     WHERE job.id=candidate.id
+    RETURNING job.*
+  `, [config.workerJobMaxAttempts, config.workerJobRetryDelayMs, config.workerJobLeaseMs, leaseToken]);
   return result.rows[0] || null;
+}
+
+export async function refreshJobHeartbeat(jobId, leaseToken, db = pool) {
+  const result = await db.query(`
+    UPDATE scrape_jobs SET heartbeat_at=NOW()
+     WHERE id=$1 AND status='running' AND lease_token=$2
+  `, [jobId, leaseToken]);
+  return result.rowCount > 0;
 }
 
 export async function updateJobCounters(jobId, { pages = 0, products = 0, robots = 0 } = {}) {

@@ -5,6 +5,11 @@ import {
   isEligibleNationalFlyer,
   classifyLidlFlyer,
 } from './offers-utils.js';
+import {
+  applyOfferRetention,
+  classifyOfferStatus,
+  getDateInTimeZone,
+} from './offer-validity.js';
 
 const FRANPRIX_HOME = 'https://www.franprix.fr/';
 const LIDL_API = 'https://endpoints.leaflets.schwarz/v4';
@@ -40,17 +45,7 @@ function fold(value) {
     .replace(/\p{Diacritic}/gu, '');
 }
 
-function parisToday() {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Europe/Paris',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(new Date());
-
-  const values = Object.fromEntries(parts.map(p => [p.type, p.value]));
-  return `${values.year}-${values.month}-${values.day}`;
-}
+const parisToday = () => getDateInTimeZone();
 
 function decodeEntities(value) {
   const named = {
@@ -152,16 +147,6 @@ function parseFranprixDates(text) {
   };
 }
 
-function offerStatus(validFrom, validUntil) {
-  const today = parisToday();
-
-  if (!validFrom || !validUntil) return 'draft';
-  if (validUntil < today) return 'expired';
-  if (validFrom > today) return 'draft';
-  return 'active';
-}
-
-
 async function fetchText(url) {
   const response = await fetch(url, {
     signal: AbortSignal.timeout(20000),
@@ -249,7 +234,7 @@ async function collectFranprix() {
       }
 
       const { validFrom, validUntil } = parseFranprixDates(text);
-      const status = offerStatus(validFrom, validUntil);
+      const status = classifyOfferStatus(validFrom, validUntil, parisToday());
       const titleIndex = text.toLowerCase().indexOf(title.toLowerCase());
       const offerContext = titleIndex >= 0
         ? text.slice(titleIndex, titleIndex + 2500)
@@ -408,7 +393,7 @@ async function collectLidl() {
 
       totalProducts += catalogItems.length;
 
-      const status = offerStatus(validFrom, validUntil);
+      const status = classifyOfferStatus(validFrom, validUntil, parisToday());
 
       offers.push({
         sourceId: 'official-lidl',
@@ -627,31 +612,11 @@ async function runSource(sourceId, collector) {
 
 async function expireOffers() {
   if (DRY_RUN) return;
+  const result = await applyOfferRetention(pool, parisToday());
 
-  const expired = await pool.query(`
-    UPDATE offers
-       SET status='expired',updated_at=NOW()
-     WHERE status='active'
-       AND valid_until IS NOT NULL
-       AND valid_until < $1::date
-    RETURNING id
-  `, [parisToday()]);
-
-  if (expired.rowCount) {
-    console.log(`[expiration] ${expired.rowCount} offre(s) expirée(s).`);
-  }
-
-  const deleted = await pool.query(`
-      DELETE FROM offers
-       WHERE status = 'expired'
-         AND valid_until IS NOT NULL
-         AND valid_until < ($1::date - INTERVAL '1 year')::date
-      RETURNING id
-    `, [parisToday()]);
-
-  if (deleted.rowCount) {
-    console.log(`[rétention] ${deleted.rowCount} offre(s) supprimée(s) après un an.`);
-  }
+  console.log(
+    `[rétention] date=${parisToday()} expirées=${result.expired} supprimées=${result.deleted} cutoff=${result.cutoffDate}`,
+  );
 }
 
 async function runAll() {

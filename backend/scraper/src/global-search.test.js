@@ -56,6 +56,8 @@ test('Recherche globale fonctionne sans coordonnées GPS', async () => {
   assert.equal(result.places[0].name, 'Sephora');
   assert.match(capturedSql, /public\.osm_places/);
   assert.match(capturedSql, /public\.places/);
+  assert.doesNotMatch(capturedSql, /COALESCE\(\s*p\.location/);
+  assert.match(capturedSql, /ST_SetSRID\(ST_MakePoint\(p\.lon,p\.lat\),4326\)::geography/);
   assert.doesNotMatch(capturedSql, /ST_DWithin/);
   assert.ok(capturedValues.includes('Sephora'));
 });

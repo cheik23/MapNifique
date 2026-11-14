@@ -1,3 +1,5 @@
+import { parseDateOnly } from './offer-validity.js';
+
 export function extractDiscount(text) {
   const source = String(text ?? '');
 
@@ -22,17 +24,9 @@ export function extractDiscount(text) {
 }
 
 
-function validIsoDate(value) {
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    return false;
-  }
-  const date = new Date(`${value}T00:00:00Z`);
-  return Number.isFinite(date.getTime()) &&
-    date.toISOString().slice(0, 10) === value;
-}
-
 export function isEligibleNationalFlyer(flyer, today) {
   if (!flyer || flyer.status !== 'current') return false;
+  if (!parseDateOnly(today)) return false;
   if (
     !Array.isArray(flyer.regions) ||
     !flyer.regions.some(region => region?.type === 'national')
@@ -43,7 +37,7 @@ export function isEligibleNationalFlyer(flyer, today) {
   const start = flyer.offerStartDate;
   const end = flyer.offerEndDate;
 
-  if (!validIsoDate(start) || !validIsoDate(end)) return false;
+  if (!parseDateOnly(start) || !parseDateOnly(end)) return false;
   if (start > end || end < today) return false;
 
   // Les catalogues futurs sont admis : offerStatus les garde en brouillon.

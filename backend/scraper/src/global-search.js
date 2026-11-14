@@ -244,10 +244,7 @@ export function registerGlobalSearchRoutes(app, pool) {
           COALESCE(p.address->>'addr:postcode',p.address->>'postcode','') AS postcode,
           COALESCE(p.address->>'addr:country','') AS country,
           COALESCE(p.raw_properties,'{}'::jsonb) AS tags,
-          COALESCE(
-            p.location,
-            ST_SetSRID(ST_MakePoint(p.lon,p.lat),4326)::geography
-          ) AS location
+          ST_SetSRID(ST_MakePoint(p.lon,p.lat),4326)::geography AS location
         FROM public.places p
 
         UNION ALL

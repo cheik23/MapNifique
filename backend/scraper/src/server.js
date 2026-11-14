@@ -4,14 +4,23 @@ import cors from '@fastify/cors';
 import { initDb, pool } from './db.js';
 import { config } from './config.js';
 import { initPlacesDb, registerPlaceRoutes } from './places-api.js';
+import {
+  createRequestRateLimiter,
+  safeRequestLogSerializer,
+} from './security.js';
 
-const app = Fastify({ logger: true, bodyLimit: 1_000_000 });
+const app = Fastify({
+  logger: { serializers: { req: safeRequestLogSerializer } },
+  trustProxy: config.trustedProxyIps.length ? config.trustedProxyIps : false,
+  bodyLimit: 1_000_000,
+});
 await app.register(cors, {
   origin: (origin, callback) => {
     if (!origin || config.corsOrigins.includes(origin)) return callback(null, true);
     return callback(new Error('Origine CORS non autorisée.'), false);
   },
 });
+app.addHook('onRequest', createRequestRateLimiter(config.rateLimits));
 
 function requireAdmin(request, reply) {
   const expected = Buffer.from(String(process.env.PLACES_ADMIN_TOKEN || ''));

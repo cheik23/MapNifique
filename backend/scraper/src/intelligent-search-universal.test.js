@@ -1358,6 +1358,36 @@ test("France Travail est classé Emploi & intérim via office=government et gove
   assert.equal(overpass.category, "Emploi & intérim");
 });
 
+test("Photon peut répondre quand le catalogue PostgreSQL est indisponible", async () => {
+  const app = appHarness();
+  let mainQueryReached = false;
+  const pool = {
+    query: async sql => {
+      if (sql.includes("brand catalog") || sql.includes("location catalog")) return { rows: [] };
+      mainQueryReached = true;
+      throw new Error("osm_places missing");
+    },
+  };
+  const fetcher = async url => {
+    const parsed = new URL(url);
+    if (parsed.hostname !== "photon.komoot.io") throw new Error(`Hôte inattendu : ${parsed.hostname}`);
+    return {
+      ok: true,
+      json: async () => ({ features: [feature("Testplace Boutique", 48.85, 2.35)] }),
+    };
+  };
+  registerIntelligentSearchRoutes(app, pool, { fetcher, minIntervalMs: 0, overpassEnabled: false });
+  const reply = replyHarness();
+  const result = await app.routes.get("GET /api/search/intelligent")({
+    query: { q: "Testplace Boutique", mode: "global" },
+  }, reply);
+
+  assert.equal(mainQueryReached, true);
+  assert.equal(reply.statusCode, 200);
+  assert.equal(result.places[0]?.name, "Testplace Boutique");
+  assert.match(result.externalError, /données enregistrées/);
+});
+
 test("le SQL de recherche classe aussi les agences publiques de l'emploi", async () => {
   const app = appHarness();
   let mainSql = "";

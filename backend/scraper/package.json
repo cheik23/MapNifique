@@ -9,7 +9,7 @@
   "scripts": {
     "start:api": "node src/server.js",
     "start:worker": "node src/worker.js",
-    "check": "node --check src/server.js && node --check src/worker.js && node --check src/crawler.js && node --check src/extract.js && node --check src/db.js",
+    "check": "node --check src/server.js && node --check src/worker.js && node --check src/crawler.js && node --check src/extract.js && node --check src/db.js && node --check src/offers-worker.js && node --check src/security.js && node --check src/offer-validity.js",
     "test": "node --test src/*.test.js"
   },
   "dependencies": {

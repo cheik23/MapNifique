@@ -1397,7 +1397,7 @@ function buildSearchSql({ intent, categoryFilter, city, country, activePoint, ac
         COALESCE(p.address->>'addr:postcode',p.address->>'postcode','') AS postcode,
         COALESCE(p.address->>'addr:country',p.address->>'country','') AS country,
         COALESCE(p.raw_properties,'{}'::jsonb) AS tags,
-        COALESCE(p.location,ST_SetSRID(ST_MakePoint(p.lon,p.lat),4326)::geography) AS location
+        ST_SetSRID(ST_MakePoint(p.lon,p.lat),4326)::geography AS location
       FROM public.places p
       UNION ALL
       SELECT
@@ -1709,7 +1709,10 @@ export function registerIntelligentSearchRoutes(app, pool, options = {}) {
       localTotal = Number(row.total || 0);
     } catch (error) {
       request.log?.error?.({ err: error }, "Recherche SQL universelle impossible");
-      return reply.code(500).send({ error: "Le moteur de recherche est momentanément indisponible." });
+      externalError = [
+        externalError,
+        "Les données enregistrées sont momentanément indisponibles ; les sources publiques sont encore interrogées.",
+      ].filter(Boolean).join(" ");
     }
 
     let photonRows = [];

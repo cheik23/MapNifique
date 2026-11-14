@@ -1,6 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { registerGlobalSearchRoutes } from './global-search.js';
 import { registerIntelligentSearchRoutes } from './intelligent-search.js';
+import { getDateInTimeZone, parseDateOnly } from './offer-validity.js';
 
 const clean = (value, max = 300) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 const validHttpUrl = (value) => {
@@ -68,7 +69,10 @@ export async function initPlacesDb(pool) {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       CHECK (scope <> 'store' OR place_id IS NOT NULL),
-      CHECK (status <> 'active' OR verified_at IS NOT NULL),
+      CONSTRAINT offers_active_validity_check
+        CHECK (status <> 'active' OR (verified_at IS NOT NULL AND valid_until IS NOT NULL)),
+      CONSTRAINT offers_date_range_check
+        CHECK (valid_from IS NULL OR valid_until IS NULL OR valid_from <= valid_until),
       UNIQUE(source_id, external_id)
     );
 
@@ -810,6 +814,7 @@ export function registerPlaceRoutes(app, pool) {
   });
 
   app.get('/api/offers/brands', async () => {
+    const today = getDateInTimeZone();
     const result = await pool.query(`
       SELECT DISTINCT brand_key AS "brandKey"
         FROM offers
@@ -817,11 +822,12 @@ export function registerPlaceRoutes(app, pool) {
          AND verified_at IS NOT NULL
          AND brand_key <> ''
          AND scope IN ('brand','online')
-         AND (valid_from IS NULL OR valid_from <= CURRENT_DATE)
-         AND (valid_until IS NULL OR valid_until >= CURRENT_DATE)
+         AND (valid_from IS NULL OR valid_from <= $1::date)
+         AND valid_until IS NOT NULL
+         AND valid_until >= $1::date
        ORDER BY brand_key
        LIMIT 20
-    `);
+    `, [today]);
 
     return { brands: result.rows.map(row => row.brandKey) };
   });
@@ -831,6 +837,7 @@ export function registerPlaceRoutes(app, pool) {
     const placeId = numberOrNull(request.query.placeId);
     const lat = numberOrNull(request.query.lat);
     const lon = numberOrNull(request.query.lon);
+    const today = getDateInTimeZone();
     if ((lat === null) !== (lon === null) || (lat !== null && (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180))) {
       return reply.code(400).send({ error: 'Coordonnées invalides.' });
     }
@@ -848,8 +855,9 @@ export function registerPlaceRoutes(app, pool) {
         FROM offers o
         LEFT JOIN places p ON p.id=o.place_id
        WHERE o.status='active' AND o.verified_at IS NOT NULL
-         AND (o.valid_from IS NULL OR o.valid_from <= CURRENT_DATE)
-         AND (o.valid_until IS NULL OR o.valid_until >= CURRENT_DATE)
+         AND (o.valid_from IS NULL OR o.valid_from <= $5::date)
+         AND o.valid_until IS NOT NULL
+         AND o.valid_until >= $5::date
          AND ($1='' OR o.brand_key=$1)
          AND (
            (o.scope='store' AND (
@@ -862,7 +870,7 @@ export function registerPlaceRoutes(app, pool) {
        ORDER BY CASE WHEN o.scope='store' THEN 0 WHEN o.scope='brand' THEN 1 ELSE 2 END,
                 o.valid_until NULLS LAST, o.created_at DESC
        LIMIT 100
-    `, [brandKey, placeId, lat, lon]);
+    `, [brandKey, placeId, lat, lon, today]);
 
     const offers = result.rows;
     return {
@@ -892,6 +900,14 @@ export function registerPlaceRoutes(app, pool) {
       const brandKey = clean(body.brandKey, 100).toLowerCase();
       const statusAsked = clean(body.status || 'draft', 20);
       const verifiedAt = body.verifiedAt ? new Date(body.verifiedAt) : null;
+      const hasValidFrom = body.validFrom !== undefined
+        && body.validFrom !== null
+        && body.validFrom !== '';
+      const hasValidUntil = body.validUntil !== undefined
+        && body.validUntil !== null
+        && body.validUntil !== '';
+      const validFrom = hasValidFrom ? parseDateOnly(body.validFrom) : null;
+      const validUntil = hasValidUntil ? parseDateOnly(body.validUntil) : null;
       if (!/^[a-z0-9][a-z0-9:_-]{1,79}$/.test(sourceId)) throw new Error('sourceId invalide.');
       if (!title || !sourceUrl) throw new Error('Titre et URL source officiels obligatoires.');
       if (!['store','brand','online'].includes(scope)) throw new Error('scope doit être store, brand ou online.');
@@ -899,12 +915,16 @@ export function registerPlaceRoutes(app, pool) {
       if (scope === 'store' && (!Number.isSafeInteger(placeId) || placeId < 1)) throw new Error('Une offre magasin doit être liée à un placeId.');
       if (scope !== 'store' && !brandKey) throw new Error('brandKey obligatoire pour une offre enseigne ou en ligne.');
       if (!['draft','active','expired','rejected'].includes(statusAsked)) throw new Error('Statut invalide.');
+      if (hasValidFrom && !validFrom) throw new Error('validFrom doit être une date réelle au format YYYY-MM-DD.');
+      if (hasValidUntil && !validUntil) throw new Error('validUntil doit être une date réelle au format YYYY-MM-DD.');
       if (statusAsked === 'active' && (!verifiedAt || Number.isNaN(verifiedAt.getTime()))) throw new Error('Une offre active doit comporter verifiedAt.');
-      const validFrom = body.validFrom ? new Date(body.validFrom) : null;
-      const validUntil = body.validUntil ? new Date(body.validUntil) : null;
-      if (validFrom && Number.isNaN(validFrom.getTime())) throw new Error('validFrom invalide.');
-      if (validUntil && Number.isNaN(validUntil.getTime())) throw new Error('validUntil invalide.');
+      if (statusAsked === 'active' && !validUntil) throw new Error('Une offre active doit comporter validUntil.');
       if (validFrom && validUntil && validUntil < validFrom) throw new Error('La date de fin précède la date de début.');
+      if (statusAsked === 'active') {
+        const today = getDateInTimeZone();
+        if (validUntil < today) throw new Error('Une offre expirée ne peut pas être activée.');
+        if (validFrom && validFrom > today) throw new Error('Une offre future doit rester en brouillon.');
+      }
 
       const externalId = clean(body.externalId, 160) || null;
       const result = await pool.query(`
@@ -922,8 +942,8 @@ export function registerPlaceRoutes(app, pool) {
       `, [sourceId, externalId, placeId, brandKey, title, clean(body.description, 1000) || null,
         offerType, scope, clean(body.discountLabel, 100) || null, clean(body.promoCode, 80) || null,
         landingUrl, sourceUrl, clean(body.sourceName, 120) || null, clean(body.terms, 1500) || null,
-        validFrom ? validFrom.toISOString().slice(0, 10) : null,
-        validUntil ? validUntil.toISOString().slice(0, 10) : null,
+        validFrom,
+        validUntil,
         statusAsked, verifiedAt && !Number.isNaN(verifiedAt.getTime()) ? verifiedAt.toISOString() : null]);
       return reply.code(201).send({ offer: result.rows[0] });
     } catch (error) {
